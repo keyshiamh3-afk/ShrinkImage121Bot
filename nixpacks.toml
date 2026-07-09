@@ -1,0 +1,10 @@
+[phases.setup]
+nixPkgs = ["python311Full"]
+
+[phases.install]
+cmds = [
+  "python3 -m pip install --break-system-packages -r requirements.txt"
+]
+
+[phases.start]
+cmd = "python3 bot.py"
