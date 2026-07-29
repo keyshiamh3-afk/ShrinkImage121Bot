@@ -4,10 +4,17 @@ import sys
 import io
 import sqlite3
 from datetime import datetime
-from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import Conflict
+
+# Try importing PIL, handle if not available
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    logging.warning("PIL not available, image compression will be limited")
 
 # --- Configuration ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -20,7 +27,7 @@ admin_ids_str = os.environ.get("ADMIN_IDS", "")
 if admin_ids_str:
     ADMIN_IDS = [int(x.strip()) for x in admin_ids_str.split(",") if x.strip().isdigit()]
 
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
+MAX_FILE_SIZE = 20 * 1024 * 1024
 
 # --- Logging ---
 logging.basicConfig(
@@ -139,13 +146,14 @@ def save_compression_history(user_id, original_size, compressed_size, saved_perc
 # --- Image Compression Functions ---
 def compress_image(image_data, quality=85, max_width=None, max_height=None):
     """Compress image with given quality and dimensions."""
+    if not PIL_AVAILABLE:
+        return image_data, (0, 0)
+    
     try:
         img = Image.open(io.BytesIO(image_data))
+        original_size = img.size
         
-        # Get original format
-        original_format = img.format
-        
-        # Convert RGBA to RGB for JPEG
+        # Convert RGBA to RGB
         if img.mode == 'RGBA':
             background = Image.new('RGB', img.size, (255, 255, 255))
             background.paste(img, mask=img.split()[3])
@@ -166,13 +174,7 @@ def compress_image(image_data, quality=85, max_width=None, max_height=None):
         
         # Compress
         output = io.BytesIO()
-        
-        # Use PNG for images with transparency
-        if original_format == 'PNG' and img.mode == 'RGBA':
-            img.save(output, format='PNG', optimize=True)
-        else:
-            img.save(output, format='JPEG', quality=quality, optimize=True)
-        
+        img.save(output, format='JPEG', quality=quality, optimize=True)
         compressed_data = output.getvalue()
         output.close()
         
@@ -184,6 +186,9 @@ def compress_image(image_data, quality=85, max_width=None, max_height=None):
 
 def get_optimal_quality(image_data, target_size_mb=0.5):
     """Find optimal quality for target file size."""
+    if not PIL_AVAILABLE:
+        return 85
+    
     target_bytes = target_size_mb * 1024 * 1024
     
     if len(image_data) <= target_bytes:
@@ -225,9 +230,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Compress images up to 20MB\n"
         f"• Custom quality settings\n"
         f"• Resize images\n"
-        f"• Auto-optimization\n"
-        f"• Batch processing\n"
-        f"• Compression history\n\n"
+        f"• Auto-optimization\n\n"
         f"**Commands:**\n"
         f"/compress - Open options menu\n"
         f"/quality <1-100> - Set compression quality\n"
@@ -257,8 +260,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Tips:**\n"
         "• Lower quality = smaller file\n"
         "• Higher quality = better image\n"
-        "• Auto-optimization finds best quality\n"
-        "• Send multiple images for batch compression\n\n"
+        "• Auto-optimization finds best quality\n\n"
         "**Examples:**\n"
         "/quality 70\n"
         "/resize 800 600"
