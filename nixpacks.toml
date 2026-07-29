@@ -8,3 +8,6 @@ cmds = [
 
 [phases.start]
 cmd = "python bot.py"
+
+[phases.start]
+workingDir = "/app"
