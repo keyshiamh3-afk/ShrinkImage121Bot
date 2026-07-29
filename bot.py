@@ -2,10 +2,9 @@ import os
 import logging
 import sys
 import sqlite3
-import asyncio
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes, CallbackQueryHandler
 from telegram.error import Conflict
 
 # --- Configuration ---
@@ -58,22 +57,6 @@ def add_user(user_id, username, first_name):
               (datetime.now().isoformat(), username, first_name, user_id))
     conn.commit()
     conn.close()
-
-def get_user(user_id):
-    conn = sqlite3.connect('rswallet_bot.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, username, first_name, last_interaction, reminder_sent FROM users WHERE user_id=?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return {
-            'user_id': row[0],
-            'username': row[1],
-            'first_name': row[2],
-            'last_interaction': row[3],
-            'reminder_sent': row[4]
-        }
-    return None
 
 def update_reminder_status(user_id, sent=True):
     conn = sqlite3.connect('rswallet_bot.db')
@@ -142,17 +125,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         except FileNotFoundError:
             logger.error("Image file not found! Make sure 'rswallet_image.png' is in the bot directory.")
-            # Fallback: send without image
-            await query.message.reply_text(
-                WELCOME_MESSAGE,
-                parse_mode='HTML'
-            )
+            await query.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Image send error: {e}")
-            await query.message.reply_text(
-                WELCOME_MESSAGE,
-                parse_mode='HTML'
-            )
+            await query.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
         
         # Delete the original message with button
         try:
@@ -161,10 +137,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Delete error: {e}")
     
     elif data == "register":
-        # Log the click
         log_click(user_id, 'register_button')
-        
-        # Send registration link
         await query.message.reply_text(
             "🔗 **Register Now:**\n\n"
             "https://app-web.rswallet-api.com/regist?code=0ealuckpbosq\n\n"
@@ -173,10 +146,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "channel":
-        # Log the click
         log_click(user_id, 'channel_button')
-        
-        # Send channel link
         await query.message.reply_text(
             "📢 **Join our Channel:**\n\n"
             "https://t.me/rswalleto\n\n"
@@ -191,11 +161,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = user.username or user.first_name
     first_name = user.first_name
     
-    # Add user to database
     add_user(user_id, username, first_name)
     log_click(user_id, 'start_command')
     
-    # Create welcome button
     keyboard = [
         [InlineKeyboardButton("🚀 Get Started Now", callback_data="welcome")],
         [InlineKeyboardButton("📢 Join Channel", callback_data="channel")],
@@ -203,7 +171,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Welcome text
     welcome_text = (
         f"👋 **Welcome {first_name}!**\n\n"
         f"💰 **RS Wallet** - Your Gateway to Crypto Earnings!\n\n"
@@ -237,7 +204,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually trigger the welcome message."""
     try:
         with open('rswallet_image.png', 'rb') as photo:
             await update.message.reply_photo(
@@ -253,7 +219,6 @@ async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
 
 async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send registration link."""
     await update.message.reply_text(
         "🔗 **Register Now:**\n\n"
         "https://app-web.rswallet-api.com/regist?code=0ealuckpbosq\n\n"
@@ -262,7 +227,6 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send channel link."""
     await update.message.reply_text(
         "📢 **Join our Channel:**\n\n"
         "https://t.me/rswalleto\n\n"
@@ -271,7 +235,6 @@ async def channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show bot statistics (admin only)."""
     user_id = update.effective_user.id
     
     if user_id not in ADMIN_IDS:
@@ -288,70 +251,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(stats_text, parse_mode='Markdown')
-
-# --- Reminder Scheduler ---
-async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Send reminders to users who haven't interacted for 2 hours."""
-    logger.info("Checking for users to remind...")
-    
-    conn = sqlite3.connect('rswallet_bot.db')
-    c = conn.cursor()
-    
-    # Get users who haven't interacted in 2 hours and haven't been reminded
-    two_hours_ago = (datetime.now() - timedelta(hours=2)).isoformat()
-    c.execute("""
-        SELECT user_id, username, first_name 
-        FROM users 
-        WHERE last_interaction < ? 
-        AND reminder_sent = 0
-    """, (two_hours_ago,))
-    
-    users = c.fetchall()
-    conn.close()
-    
-    for user_id, username, first_name in users:
-        try:
-            # Send reminder
-            reminder_text = (
-                f"⏰ **Hey {first_name or 'there'}!**\n\n"
-                f"Don't miss out on the amazing opportunities with RS Wallet! 💰\n\n"
-                f"• Get 4% on INR deposits\n"
-                f"• Best USDT rate (107 INR)\n"
-                f"• Build your team and earn\n\n"
-                f"Click /start to get started!"
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("🚀 Get Started", callback_data="welcome")],
-                [InlineKeyboardButton("💰 Register", callback_data="register")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=reminder_text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-            
-            # Update reminder status
-            update_reminder_status(user_id, sent=True)
-            
-            logger.info(f"Reminder sent to user {user_id}")
-            await asyncio.sleep(0.5)  # Rate limit
-            
-        except Exception as e:
-            logger.error(f"Failed to send reminder to {user_id}: {e}")
-
-# --- Periodic Reminder Setup ---
-async def schedule_reminders(application):
-    """Schedule the reminder job."""
-    job_queue = application.job_queue
-    
-    if job_queue:
-        # Run every 30 minutes
-        job_queue.run_repeating(send_reminders, interval=1800, first=60)
-        logger.info("Reminder scheduler started!")
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -376,33 +275,19 @@ def main():
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Command handlers
+    # Add handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("welcome", welcome_command))
     application.add_handler(CommandHandler("register", register_command))
     application.add_handler(CommandHandler("channel", channel_command))
     application.add_handler(CommandHandler("stats", stats_command))
-    
-    # Callback handler
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Error handler
     application.add_error_handler(error_handler)
     
     logger.info("✅ Bot is ready!")
     
-    # Clear webhook
-    application.bot.delete_webhook()
-    
-    # Schedule reminders
-    try:
-        asyncio.run(schedule_reminders(application))
-    except RuntimeError:
-        # If already running in event loop
-        pass
-    
-    # Start polling
+    # Start polling directly
     try:
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
