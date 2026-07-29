@@ -2,9 +2,9 @@ import os
 import logging
 import sys
 import sqlite3
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes, CallbackQueryHandler
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from telegram.error import Conflict
 
 # --- Configuration ---
@@ -34,7 +34,6 @@ def init_db():
                   username TEXT,
                   first_name TEXT,
                   last_interaction TIMESTAMP,
-                  reminder_sent INTEGER DEFAULT 0,
                   joined_date TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS referral_clicks
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,13 +54,6 @@ def add_user(user_id, username, first_name):
               (user_id, username, first_name, datetime.now().isoformat()))
     c.execute("UPDATE users SET last_interaction=?, username=?, first_name=? WHERE user_id=?",
               (datetime.now().isoformat(), username, first_name, user_id))
-    conn.commit()
-    conn.close()
-
-def update_reminder_status(user_id, sent=True):
-    conn = sqlite3.connect('rswallet_bot.db')
-    c = conn.cursor()
-    c.execute("UPDATE users SET reminder_sent=? WHERE user_id=?", (1 if sent else 0, user_id))
     conn.commit()
     conn.close()
 
@@ -105,27 +97,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = query.from_user.username or query.from_user.first_name
     first_name = query.from_user.first_name
     
-    # Add user to database
     add_user(user_id, username, first_name)
     
     data = query.data
     
     if data == "welcome":
-        # Log the click
         log_click(user_id, 'welcome_button')
         
-        # Send the welcome message with image from local file
+        # Send the welcome message with image
         try:
-            # Open and send the image file
-            with open('rswallet_image.png', 'rb') as photo:
-                await query.message.reply_photo(
-                    photo=photo,
-                    caption=WELCOME_MESSAGE,
+            # Check if image exists
+            image_path = 'rswallet_image.png'
+            if os.path.exists(image_path):
+                # Send as photo
+                with open(image_path, 'rb') as photo:
+                    await query.message.reply_photo(
+                        photo=InputFile(photo, filename='rswallet_image.png'),
+                        caption=WELCOME_MESSAGE,
+                        parse_mode='HTML'
+                    )
+            else:
+                # Fallback: send without image
+                logger.error("Image file not found at path: " + os.path.abspath(image_path))
+                await query.message.reply_text(
+                    "⚠️ Image not found. Here's the message:\n\n" + WELCOME_MESSAGE,
                     parse_mode='HTML'
                 )
-        except FileNotFoundError:
-            logger.error("Image file not found! Make sure 'rswallet_image.png' is in the bot directory.")
-            await query.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Image send error: {e}")
             await query.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
@@ -205,15 +202,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        with open('rswallet_image.png', 'rb') as photo:
-            await update.message.reply_photo(
-                photo=photo,
-                caption=WELCOME_MESSAGE,
+        image_path = 'rswallet_image.png'
+        if os.path.exists(image_path):
+            with open(image_path, 'rb') as photo:
+                await update.message.reply_photo(
+                    photo=InputFile(photo, filename='rswallet_image.png'),
+                    caption=WELCOME_MESSAGE,
+                    parse_mode='HTML'
+                )
+        else:
+            await update.message.reply_text(
+                "⚠️ Image file not found. Here's the message:\n\n" + WELCOME_MESSAGE,
                 parse_mode='HTML'
             )
-    except FileNotFoundError:
-        logger.error("Image file not found!")
-        await update.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
     except Exception as e:
         logger.error(f"Image send error: {e}")
         await update.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
@@ -268,14 +269,17 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     logger.info("💰 Starting RS Wallet Bot...")
     
-    # Check if image file exists
-    if not os.path.exists('rswallet_image.png'):
-        logger.warning("⚠️ Image file 'rswallet_image.png' not found! The bot will work but without images.")
+    # Check and log image file status
+    image_path = 'rswallet_image.png'
+    if os.path.exists(image_path):
+        file_size = os.path.getsize(image_path)
+        logger.info(f"✅ Image file found: {image_path} ({file_size} bytes)")
+    else:
+        logger.error(f"❌ Image file NOT found at: {os.path.abspath(image_path)}")
+        logger.error("Make sure 'rswallet_image.png' is in the same directory as bot.py")
     
-    # Create application
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Add handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("welcome", welcome_command))
@@ -287,7 +291,6 @@ def main():
     
     logger.info("✅ Bot is ready!")
     
-    # Start polling directly
     try:
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
