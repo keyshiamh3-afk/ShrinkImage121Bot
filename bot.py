@@ -1,306 +1,184 @@
 import os
 import logging
-import sys
-import sqlite3
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
-from telegram.error import Conflict
+import asyncio
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from telegram import Update, InputFile
+from telegram.ext import Application, CommandHandler, ContextTypes
+import aiohttp
 
-# --- Configuration ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# Load environment variables
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    logging.error("BOT_TOKEN environment variable not set!")
-    sys.exit(1)
+    raise ValueError("No BOT_TOKEN found. Please set it in Railway variables.")
 
-ADMIN_IDS = []
-admin_ids_str = os.environ.get("ADMIN_IDS", "")
-if admin_ids_str:
-    ADMIN_IDS = [int(x.strip()) for x in admin_ids_str.split(",") if x.strip().isdigit()]
-
-# --- Logging ---
+# Enable logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Database Setup ---
-def init_db():
-    conn = sqlite3.connect('rswallet_bot.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (user_id INTEGER PRIMARY KEY,
-                  username TEXT,
-                  first_name TEXT,
-                  last_interaction TIMESTAMP,
-                  joined_date TIMESTAMP)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS referral_clicks
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  click_time TIMESTAMP,
-                  source TEXT)''')
-    conn.commit()
-    conn.close()
-    logger.info("Database initialized")
+# ============================================================
+# ✏️ CONFIGURATION - EDIT THESE AS NEEDED
+# ============================================================
 
-init_db()
+# The welcome message you provided
+WELCOME_TEXT = (
+    "✅Welcome to RS Wallet. We offer a 4% INR USDT exchange rate (107), "
+    "a team commission of 0.3% for Level 1 and 0.1% for Level 2.\n\n"
+    "⏩Register here ✅\n"
+    "https://app-web.rswallet-api.com/regist?code=0ealuckpbosq\n\n"
+    "🔝We also provide team leader salary 0.5% contact us now ⭐️\n"
+    "@Alysyas\n\n"
+    "Channel link ⏩\n"
+    "https://t.me/rswalleto"
+)
 
-# --- Database Helper Functions ---
-def add_user(user_id, username, first_name):
-    conn = sqlite3.connect('rswallet_bot.db')
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, joined_date) VALUES (?, ?, ?, ?)",
-              (user_id, username, first_name, datetime.now().isoformat()))
-    c.execute("UPDATE users SET last_interaction=?, username=?, first_name=? WHERE user_id=?",
-              (datetime.now().isoformat(), username, first_name, user_id))
-    conn.commit()
-    conn.close()
+# The image file name (must be in the same GitHub repository)
+WELCOME_IMAGE = "rswallet_image.png"  # Your image file
 
-def log_click(user_id, source='button'):
-    conn = sqlite3.connect('rswallet_bot.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO referral_clicks (user_id, click_time, source) VALUES (?, ?, ?)",
-              (user_id, datetime.now().isoformat(), source))
-    conn.commit()
-    conn.close()
+# Reminder interval in seconds (2 hours = 7200 seconds)
+REMINDER_INTERVAL = 7200  # 2 hours
 
-def get_user_count():
-    conn = sqlite3.connect('rswallet_bot.db')
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
-    count = c.fetchone()[0]
-    conn.close()
-    return count
+# ============================================================
+# BOT COMMAND HANDLERS
+# ============================================================
 
-# --- Message Content ---
-WELCOME_MESSAGE = """✅Welcome to RS Wallet. We offer a 4% INR USDT exchange rate (107), a team commission of 0.3% for Level 1 and 0.1% for Level 2. 
-
-⏩Register here ✅
-
-https://app-web.rswallet-api.com/regist?code=0ealuckpbosq
-
-🔝We also provide team leader salary 0.5% contact us now ⭐️
-
-@Alysyas
-
-Channel link ⏩
-
-https://t.me/rswalleto"""
-
-# --- Button Callback Handler ---
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    username = query.from_user.username or query.from_user.first_name
-    first_name = query.from_user.first_name
-    
-    add_user(user_id, username, first_name)
-    
-    data = query.data
-    
-    if data == "welcome":
-        log_click(user_id, 'welcome_button')
-        
-        # Send the welcome message with image
-        try:
-            # Check if image exists
-            image_path = 'rswallet_image.png'
-            if os.path.exists(image_path):
-                # Send as photo
-                with open(image_path, 'rb') as photo:
-                    await query.message.reply_photo(
-                        photo=InputFile(photo, filename='rswallet_image.png'),
-                        caption=WELCOME_MESSAGE,
-                        parse_mode='HTML'
-                    )
-            else:
-                # Fallback: send without image
-                logger.error("Image file not found at path: " + os.path.abspath(image_path))
-                await query.message.reply_text(
-                    "⚠️ Image not found. Here's the message:\n\n" + WELCOME_MESSAGE,
-                    parse_mode='HTML'
-                )
-        except Exception as e:
-            logger.error(f"Image send error: {e}")
-            await query.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
-        
-        # Delete the original message with button
-        try:
-            await query.message.delete()
-        except Exception as e:
-            logger.error(f"Delete error: {e}")
-    
-    elif data == "register":
-        log_click(user_id, 'register_button')
-        await query.message.reply_text(
-            "🔗 **Register Now:**\n\n"
-            "https://app-web.rswallet-api.com/regist?code=0ealuckpbosq\n\n"
-            "Start earning with RS Wallet today! 💰",
-            parse_mode='Markdown'
-        )
-    
-    elif data == "channel":
-        log_click(user_id, 'channel_button')
-        await query.message.reply_text(
-            "📢 **Join our Channel:**\n\n"
-            "https://t.me/rswalleto\n\n"
-            "Stay updated with the latest news! 📰",
-            parse_mode='Markdown'
-        )
-
-# --- Command Handlers ---
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the welcome image and message when /start is issued."""
     user = update.effective_user
-    user_id = user.id
-    username = user.username or user.first_name
-    first_name = user.first_name
-    
-    add_user(user_id, username, first_name)
-    log_click(user_id, 'start_command')
-    
-    keyboard = [
-        [InlineKeyboardButton("🚀 Get Started Now", callback_data="welcome")],
-        [InlineKeyboardButton("📢 Join Channel", callback_data="channel")],
-        [InlineKeyboardButton("💰 Register", callback_data="register")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    welcome_text = (
-        f"👋 **Welcome {first_name}!**\n\n"
-        f"💰 **RS Wallet** - Your Gateway to Crypto Earnings!\n\n"
-        f"Click the button below to learn how you can:\n"
-        f"• Earn 4% on INR deposits\n"
-        f"• Get the best USDT rate (107 INR)\n"
-        f"• Build your team and earn commissions\n"
-        f"• Become a Team Leader with 0.5% salary\n\n"
-        f"🚀 Start your journey now!"
-    )
-    
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
+    logger.info(f"User {user.first_name} ({user.id}) started the bot.")
+
+    # Send the image first
+    try:
+        with open(WELCOME_IMAGE, 'rb') as photo:
+            await update.message.reply_photo(
+                photo=InputFile(photo),
+                caption=WELCOME_TEXT,
+                parse_mode="HTML"
+            )
+    except FileNotFoundError:
+        # If image is missing, send just the text
+        logger.warning(f"Image file '{WELCOME_IMAGE}' not found. Sending text only.")
+        await update.message.reply_text(WELCOME_TEXT)
+    except Exception as e:
+        logger.error(f"Error sending image: {e}")
+        await update.message.reply_text(WELCOME_TEXT)
+
+    # Add user to reminder list if not already present
+    if 'users_to_remind' not in context.bot_data:
+        context.bot_data['users_to_remind'] = set()
+    context.bot_data['users_to_remind'].add(update.effective_user.id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a help message."""
     help_text = (
-        "🤖 **RS Wallet Bot Help**\n\n"
-        "**Commands:**\n"
-        "/start - Start the bot\n"
-        "/welcome - View welcome message\n"
-        "/register - Get registration link\n"
-        "/channel - Join our channel\n"
-        "/stats - View bot statistics\n"
-        "/help - Show this message\n\n"
-        "**For support:**\n"
-        "Contact @Alysyas"
+        "🤖 *RS Wallet Bot Commands*\n\n"
+        "/start - Show the welcome message and image\n"
+        "/help - Show this help menu\n"
+        "/stop_reminders - Stop receiving 2-hour reminders\n"
+        "/resume_reminders - Resume receiving reminders\n"
+        "/status - Check your reminder status\n\n"
+        "⏰ Reminders are sent every 2 hours.\n\n"
+        "For support contact: @Alysyas"
     )
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
-async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        image_path = 'rswallet_image.png'
-        if os.path.exists(image_path):
-            with open(image_path, 'rb') as photo:
-                await update.message.reply_photo(
-                    photo=InputFile(photo, filename='rswallet_image.png'),
-                    caption=WELCOME_MESSAGE,
-                    parse_mode='HTML'
-                )
-        else:
-            await update.message.reply_text(
-                "⚠️ Image file not found. Here's the message:\n\n" + WELCOME_MESSAGE,
-                parse_mode='HTML'
-            )
-    except Exception as e:
-        logger.error(f"Image send error: {e}")
-        await update.message.reply_text(WELCOME_MESSAGE, parse_mode='HTML')
-
-async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔗 **Register Now:**\n\n"
-        "https://app-web.rswallet-api.com/regist?code=0ealuckpbosq\n\n"
-        "✅ Start earning with RS Wallet today!",
-        parse_mode='Markdown'
-    )
-
-async def channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📢 **Join our Channel:**\n\n"
-        "https://t.me/rswalleto\n\n"
-        "Stay updated with the latest news!",
-        parse_mode='Markdown'
-    )
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stop_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Stop sending reminders to the user."""
     user_id = update.effective_user.id
-    
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⚠️ This command is for admins only!")
-        return
-    
-    user_count = get_user_count()
-    
-    stats_text = (
-        f"📊 **RS Wallet Bot Statistics**\n\n"
-        f"👥 Total Users: {user_count}\n"
-        f"🟢 Bot Status: Online\n\n"
-        f"📈 Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    
-    await update.message.reply_text(stats_text, parse_mode='Markdown')
-
-# --- Error Handler ---
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Error: {context.error}")
-    
-    if isinstance(context.error, Conflict):
-        logger.warning("Conflict error - another instance running")
-    elif update and hasattr(update, 'message') and update.message:
-        try:
-            await update.message.reply_text("❌ An error occurred. Please try again later.")
-        except:
-            pass
-
-# --- Main Function ---
-def main():
-    logger.info("💰 Starting RS Wallet Bot...")
-    
-    # Check and log image file status
-    image_path = 'rswallet_image.png'
-    if os.path.exists(image_path):
-        file_size = os.path.getsize(image_path)
-        logger.info(f"✅ Image file found: {image_path} ({file_size} bytes)")
+    if 'users_to_remind' in context.bot_data:
+        context.bot_data['users_to_remind'].discard(user_id)
+        await update.message.reply_text("✅ You will no longer receive 2-hour reminders.")
     else:
-        logger.error(f"❌ Image file NOT found at: {os.path.abspath(image_path)}")
-        logger.error("Make sure 'rswallet_image.png' is in the same directory as bot.py")
-    
+        await update.message.reply_text("⚠️ You were not on the reminder list.")
+
+async def resume_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resume sending reminders to the user."""
+    user_id = update.effective_user.id
+    if 'users_to_remind' not in context.bot_data:
+        context.bot_data['users_to_remind'] = set()
+    context.bot_data['users_to_remind'].add(user_id)
+    await update.message.reply_text("✅ You will now receive 2-hour reminders again.")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check if the user is on the reminder list."""
+    user_id = update.effective_user.id
+    if 'users_to_remind' in context.bot_data and user_id in context.bot_data['users_to_remind']:
+        await update.message.reply_text("⏰ You are currently receiving 2-hour reminders.")
+    else:
+        await update.message.reply_text("⏸️ You are not receiving reminders. Use /resume_reminders to start.")
+
+# ============================================================
+# REMINDER JOB (Runs every 2 hours)
+# ============================================================
+
+async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Send a reminder message to all users in the reminder list."""
+    if 'users_to_remind' not in context.bot_data:
+        return
+
+    reminder_text = (
+        "⏰ *2-Hour Reminder*\n\n"
+        "✅Welcome to RS Wallet. We offer a 4% INR USDT exchange rate (107), "
+        "a team commission of 0.3% for Level 1 and 0.1% for Level 2.\n\n"
+        "⏩Register here ✅\n"
+        "https://app-web.rswallet-api.com/regist?code=0ealuckpbosq\n\n"
+        "🔝We also provide team leader salary 0.5% contact us now ⭐️\n"
+        "@Alysyas\n\n"
+        "Channel link ⏩\n"
+        "https://t.me/rswalleto"
+    )
+
+    users_to_remove = []
+    for user_id in context.bot_data['users_to_remind']:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=reminder_text,
+                parse_mode="Markdown"
+            )
+            logger.info(f"Reminder sent to user {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to send reminder to {user_id}: {e}")
+            users_to_remove.append(user_id)
+
+    # Clean up users who blocked the bot
+    for user_id in users_to_remove:
+        context.bot_data['users_to_remind'].discard(user_id)
+
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
+
+def main():
+    """Start the bot."""
+    # Create the Application
     application = Application.builder().token(BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start_command))
+
+    # Add command handlers
+    application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("welcome", welcome_command))
-    application.add_handler(CommandHandler("register", register_command))
-    application.add_handler(CommandHandler("channel", channel_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_error_handler(error_handler)
-    
-    logger.info("✅ Bot is ready!")
-    
-    try:
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+    application.add_handler(CommandHandler("stop_reminders", stop_reminders))
+    application.add_handler(CommandHandler("resume_reminders", resume_reminders))
+    application.add_handler(CommandHandler("status", status_command))
+
+    # Schedule the reminder job (every 2 hours)
+    job_queue = application.job_queue
+    if job_queue:
+        job_queue.run_repeating(
+            send_reminders,
+            interval=REMINDER_INTERVAL,
+            first=10  # First reminder after 10 seconds (for testing)
         )
-    except Conflict as e:
-        logger.error(f"Conflict error: {e}")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1)
+        logger.info(f"Reminder job scheduled every {REMINDER_INTERVAL} seconds (2 hours).")
+    else:
+        logger.warning("Job queue not available. Reminders will not work.")
+
+    # Start the bot
+    print("🤖 RS Wallet Bot is starting...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
